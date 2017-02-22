@@ -3,13 +3,10 @@
 __author__ = ('David Dunn')
 __version__ = '0.1'
 
-import sys
-sys.path.append(r'../python')
-sys.path.append('/playpen/git/pyfly2')
 import numpy as np
 import cv2
 try:
-    import pyfly2
+    from shared_modules.pyfly2 import pyfly2
 except ImportError:
     print "Warning: PyFly2 is not available."
 
