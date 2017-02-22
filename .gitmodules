@@ -1,0 +1,3 @@
+[submodule "shared_modules/pyfly2"]
+	path = shared_modules/pyfly2
+	url = https://github.com/kbrafford/pyfly2.git
