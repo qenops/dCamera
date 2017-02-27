@@ -1,16 +1,18 @@
-﻿#!/usr/bin/python3
+﻿#!/usr/bin/python
  
 __author__ = ('David Dunn')
 __version__ = '0.1'
 
 import numpy as np
 import cv2
-try:
-    from shared_modules.pyfly2 import pyfly2
-except ImportError:
-    print "Warning: PyFly2 is not available."
+#try:
+#from shared_modules.pyfly2 import pyfly2
+#except ImportError:
+#    print "Warning: PyFly2 is not available."
 
 modes = {'cv2':0, 'ptGrey':1} # different camera APIs that are supported
+
+__TEST__MODE__ = False
 
 def cv2CloseWindow(window):
     cv2.destroyWindow(window)
@@ -46,6 +48,7 @@ class Camera(object):
                     return 0
                 return 1
             elif self.mode == modes['ptGrey']:
+                raise ValueError('but we aren\'t using pyfly for anything currently')
                 self._context = pyfly2.Context()
                 if self._context.num_cameras < 1:
                     #raise ValueError('No PointGrey cameras found')
@@ -54,7 +57,7 @@ class Camera(object):
                 self._cap = self._context.get_camera(self.id)
                 self._cap.Connect()
                 self._cap.StartCapture()
-                print "Connected PointGrey camera %s"%self.id
+                print("Connected PointGrey camera %s" % self.id)
                 return 1
         return 2
     def close(self):
@@ -80,6 +83,7 @@ class Camera(object):
     def captureFrames(self):
         if self.open():
             return captureFrames(self)
+        
     def getResolution(self):
         if self.open():
             if self.mode == modes['cv2']:
@@ -91,6 +95,8 @@ class Camera(object):
                 return self._cap.GetSize()
     def calibrate(self, gridCorners, **kwargs):     # flags=cv2.CALIB_FIX_K3
         images = captureFrames(self)
+        if __TEST__MODE__ and images is None:
+            images = [cv2.imread('../data/calibration/%02d.png' % i) for i in range(8)]
         ret, matrix, dist = calibrate(images, gridCorners, **kwargs)
         if ret < self.error:
             self.error = ret
@@ -148,9 +154,9 @@ def calibrate(images, gridCorners, **kwargs):
         #temp = img
         #cv2.drawChessboardCorners(temp, gridCorners, corners,ret)
         #markedImages.append(temp)
-    print 'Using %s of %s images.'%(len(objpoints), len(images))
+    print('Using %s of %s images.'%(len(objpoints), len(images)))
     #slideShow(markedImages)
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1],**kwargs)
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], cameraMatrix = np.eye(3), distCoeffs = np.zeros([14]), **kwargs)
     return ret, mtx, dist
 
 def slideShow(images,scale=False):
@@ -226,8 +232,10 @@ def captureVideo(fname, cam=None, matrix=None, dist=None, view=True):
     
 
 if __name__ == '__main__':
+    __TEST__MODE__ = True
     cam = Camera(0)
     ret = cam.calibrate((4,3), flags=cv2.CALIB_FIX_K3)
-    temp = cv2.undistort(images[i],mtx,dist)
-    print mtx
-    np.savez('camMatrix',mtx=mtx,dist=dist)
+    temp = cv2.undistort(cv2.imread('../data/calibration/00.png'),cam.matrix,cam.distortion)
+    cv2.imwrite('temp.png', temp)
+    print(cam.matrix)
+    np.savez('camMatrix',mtx=cam.matrix,dist=cam.distortion)
