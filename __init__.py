@@ -5,10 +5,10 @@ __version__ = '0.1'
 
 import numpy as np
 import cv2
-#try:
-#from shared_modules.pyfly2 import pyfly2
-#except ImportError:
-#    print "Warning: PyFly2 is not available."
+try:
+    from shared_modules.pyfly2 import pyfly2
+except ImportError:
+    print("Warning: PyFly2 is not available.")
 
 modes = {'cv2':0, 'ptGrey':1} # different camera APIs that are supported
 
@@ -48,7 +48,6 @@ class Camera(object):
                     return 0
                 return 1
             elif self.mode == modes['ptGrey']:
-                raise ValueError('but we aren\'t using pyfly for anything currently')
                 self._context = pyfly2.Context()
                 if self._context.num_cameras < 1:
                     #raise ValueError('No PointGrey cameras found')
