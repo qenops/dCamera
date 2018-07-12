@@ -1,16 +1,22 @@
 ﻿#!/usr/bin/python
  
 __author__ = ('David Dunn')
-__version__ = '0.1'
+__version__ = '0.2'
 
 import numpy as np
 import cv2
 try:
     from shared_modules.pyfly2 import pyfly2
 except ImportError:
-    print("Warning: PyFly2 is not available.")
+    print("Warning: ptGrey backend is not available.")
+try:
+    from picamera import PiCamera
+    from picamera.array import PiRGBArray
+except ImportError:
+    print("Warning: picamera backend is not available.")
+import time
 
-modes = {'cv2':0, 'ptGrey':1} # different camera APIs that are supported
+BACKEND = {'cv2':0, 'ptGrey':1, 'picamera':2} # different camera APIs that are supported
 
 __TEST__MODE__ = False
 
@@ -25,15 +31,21 @@ class Camera(object):
     ''' camera objects should store resolution and calibration data as well 
         as provide methods for capturing and viewing content regardless of source of camera data (cv2 or ptGrey)
     '''
-    def __init__(self,id,mode=modes['cv2']):
+    def __init__(self,id,backend=BACKEND['cv2'],**kwargs):
         self.id = id
-        self.mode = mode
+        self.backend = backend
+        self._cam = None
         self._cap = None
         self._context = None
-        self.resolution = [0,0]
-        self.resolution = self.getResolution()
-        self.fps = 30 if self.mode == modes['cv2'] else 15
+        self.resolution = (0,0)
+        self.resolution = self.getResolution(locals())
+        self.fps = 15 if self.backend == BACKEND['ptGrey'] else 30
         self.close()
+        self.shutter_speed = kwargs.get('shutter_speed',0)
+        self.iso = kwargs.get('iso',0)
+        self.exposure_mode = kwargs.get('exposure_mode','auto')
+        self.awb_mode = kwargs.get('awb_mode','auto')
+        self._continuousCapture = None
         self.matrix = np.identity(3)
         self.distortion = [0,0,0,0,0]
         self.error = 1
@@ -41,13 +53,13 @@ class Camera(object):
         if self.id is None:
             return 0
         if self._cap is None:
-            if self.mode == modes['cv2']:
+            if self.backend == BACKEND['cv2']:
                 self._cap = cv2.VideoCapture(self.id)
                 if not self._cap.isOpened():          # check if we succeeded
                     self._cap = None
                     return 0
                 return 1
-            elif self.mode == modes['ptGrey']:
+            elif self.backend == BACKEND['ptGrey']:
                 self._context = pyfly2.Context()
                 if self._context.num_cameras < 1:
                     #raise ValueError('No PointGrey cameras found')
@@ -58,21 +70,56 @@ class Camera(object):
                 self._cap.StartCapture()
                 print("Connected PointGrey camera %s" % self.id)
                 return 1
+            elif self.backend == BACKEND['picamera']:
+                self._cam = PiCamera()
+                self._cam.resolution = self.resolution
+                self._cam.framerate = self.fps
+                self._cap = PiRGBArray(self._cam, size=tuple(self._cam.resolution))
+                time.sleep(2)   # pause while the camera inits and settles
+                if self.shutter_speed is None:
+                    self.shutter_speed = self._cam.exposure_speed
+                self._cam.shutter_speed = self.shutter_speed
+                self._cam.iso = self.iso
+                self._cam.exposure_mode = self.exposure_mode
+                if self.awb_mode == 'off':
+                    g = self._cam.awb_gains
+                    self._cam.awb_mode = self.awb_mode
+                    self._cam.awb_gains = g
+                self._cam.awb_mode = self.awb_mode
+                return 1
         return 2
     def close(self):
         if self._cap is not None:
-            if self.mode == modes['cv2']:
+            if self.backend == BACKEND['cv2']:
                 self._cap.release()
-            elif self.mode == modes['ptGrey']:
+            elif self.backend == BACKEND['ptGrey']:
                 self._cap.StopCapture()
+            elif self.backend == BACKEND['picamera']:
+                self._continuousCapture = None
+                self._cap.close()
+                self._cam.close()
             self._cap = None
     release = close
-    def read(self):
+    def read(self, video=False):
         if self.open():
-            if self.mode == modes['cv2']:
+            if self.backend == BACKEND['cv2']:
                 return self._cap.read()
-            elif self.mode == modes['ptGrey']:
+            elif self.backend == BACKEND['ptGrey']:
                 return (1,self._cap.GrabNumPyImage('bgr'))
+            elif self.backend == BACKEND['picamera']:
+                if not video:
+                    self._continuousCapture = None
+                    self._cam.capture(self._cap, format='bgr')
+                    image = self._cap.array
+                    self._cap.truncate(0)
+                    return (1,image)
+                else:
+                    if self._continuousCapture is None:
+                        self._continuousCapture = self._cam.capture_continuous(self._cap, format='bgr', use_video_port=True)
+                    frame = next(self._continuousCapture)
+                    image = frame.array
+                    self._cap.truncate(0)
+                    return (1,image)
     def view(self):
         if self.open():
             streamVideo(self)
@@ -82,15 +129,16 @@ class Camera(object):
     def captureFrames(self):
         if self.open():
             return captureFrames(self)
-        
-    def getResolution(self):
-        if self.open():
-            if self.mode == modes['cv2']:
+    def getResolution(self, kwargs=None):
+        if self.backend == BACKEND['picamera']:
+            return kwargs.get('resolution',kwargs.get('res',(640,480)))
+        elif self.open():
+            if self.backend == BACKEND['cv2']:
                 try:
                     return (int(self._cap.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)))
                 except:
                     return (int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-            elif self.mode == modes['ptGrey']:
+            elif self.backend == BACKEND['ptGrey']:
                 return self._cap.GetSize()
     def calibrate(self, gridCorners, **kwargs):     # flags=cv2.CALIB_FIX_K3
         images = captureFrames(self)
@@ -196,7 +244,7 @@ def streamVideo(cam=None, matrix=None, dist=None):
     if not cam.open():
         return None
     while(True):
-        ret, frame = cam.read()     # Capture the frame
+        ret, frame = cam.read(video=True)     # Capture the frame
         if matrix is not None and dist is not None:
             frame = cv2.undistort(frame,matrix,dist)
         cv2.imshow('frame',frame)   # Display the frame
@@ -207,13 +255,14 @@ def streamVideo(cam=None, matrix=None, dist=None):
     cv2CloseWindow('frame')
 
 def captureVideo(fname, cam=None, matrix=None, dist=None, view=True):
+    # TODO update to use picamera's native capture method
     cam = Camera(0) if cam is None else cam
     if not cam.open():
         return None
     video = cv2.VideoWriter(fname,-1,cam.fps,cam.resolution)
     #frames = []
     while(True):
-        ret, frame = cam.read()     # Capture the frame
+        ret, frame = cam.read(video=True)     # Capture the frame
         if matrix is not None and dist is not None:
             frame = cv2.undistort(frame,matrix,dist)
         #if view:  # how can I do keyboard controls to escape without streaming the video?

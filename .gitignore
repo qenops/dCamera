@@ -91,3 +91,7 @@ ENV/
 # gedit cruft
 *~
 /.vs/dCamera/v14/*.suo
+
+# vscode
+.vscode/
+
