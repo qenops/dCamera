@@ -39,7 +39,7 @@ class Camera(object):
         self._context = None
         self.resolution = (0,0)
         self.resolution = self.getResolution(locals())
-        self.fps = 15 if self.backend == BACKEND['ptGrey'] else 30
+        self.fps = kwargs.get('fps', 15 if self.backend == BACKEND['ptGrey'] else 30)
         self.close()
         self.shutter_speed = kwargs.get('shutter_speed',0)
         self.iso = kwargs.get('iso',0)
