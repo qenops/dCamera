@@ -31,7 +31,7 @@ class Camera(object):
     ''' camera objects should store resolution and calibration data as well 
         as provide methods for capturing and viewing content regardless of source of camera data (cv2 or ptGrey)
     '''
-    def __init__(self,id,backend=BACKEND['cv2'],**kwargs):
+    def __init__(self,id=0,backend=BACKEND['cv2'],**kwargs):
         self.id = id
         self.backend = backend
         self._cam = None
@@ -177,13 +177,16 @@ def toGray(image):
         gray = image
     return gray
 
-def calibrate(images, gridCorners, **kwargs):
+def calibrate(images, gridCorners, gridScale, **kwargs):
     ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
+    cameraMatrix = kwargs.get('matrix',np.eye(3))
+    distCoeffs = kwargs.get('distortion',np.zeros([14]))
     # termination criteria
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-    # prepare object points, like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
+    criteria = kwargs.get('criteria',(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+    # prepare object points, define top left gridCorner as origin: like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
     objp = np.zeros((gridCorners[0]*gridCorners[1],3), np.float32)
     objp[:,:2] = np.mgrid[0:gridCorners[0],0:gridCorners[1]].T.reshape(-1,2)
+    objp *= gridScale
     # Arrays to store object points and image points from all the images.
     objpoints = [] # 3d point in real world space
     imgpoints = [] # 2d points in image plane.
@@ -203,7 +206,7 @@ def calibrate(images, gridCorners, **kwargs):
         #markedImages.append(temp)
     print('Using %s of %s images.'%(len(objpoints), len(images)))
     #slideShow(markedImages)
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], cameraMatrix = np.eye(3), distCoeffs = np.zeros([14]), **kwargs)
+    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], cameraMatrix=cameraMatrix, distCoeffs=distCoeffs, **kwargs)
     return ret, mtx, dist
 
 def slideShow(images,scale=False):
