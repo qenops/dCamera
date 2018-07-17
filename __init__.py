@@ -120,12 +120,15 @@ class Camera(object):
                     image = frame.array
                     self._cap.truncate(0)
                     return (1,image)
+    def readUndistort(self, video=False):
+        ret, image = self.read(video)
+        return ret, cv2.undistort(image,self.matrix,self.distortion)
     def view(self):
         if self.open():
             streamVideo(self)
     def viewUndistort(self):
         if self.open():
-            streamVideo(self, self.matrix, self.distortion)
+            streamVideo(self, True)
     def captureFrames(self):
         if self.open():
             return captureFrames(self)
@@ -152,6 +155,7 @@ class Camera(object):
         return ret
     def undistort(self, images, alpha=0.):
         toReturn = []
+        frame = cv2.undistort(frame,matrix,dist)
         size = images[0].shape
         newMtx,roi = cv2.getOptimalNewCameraMatrix(self.matrix,self.distortion,(size[1],size[0]),alpha)
         map1, map2 = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),newMtx,(size[1],size[0]),cv2.CV_16SC2)
@@ -172,7 +176,6 @@ def toGray(image):
         gray = cv2.cvtColor(image,cv2.COLOR_BGRA2GRAY)
     elif channels == 3:  
         gray = cv2.cvtColor(image,cv2.COLOR_BGR2GRAY)
-        channels = 4
     else:
         gray = image
     return gray
@@ -225,13 +228,14 @@ def slideShow(images,scale=False):
         current = current % len(images)
     cv2CloseWindow('frame')
 
-def captureFrames(cam=None):
+def captureFrames(cam=None, undistort=False):
     cam = cv2.VideoCapture(0) if cam is None else cam
     if not cam.open():
         return None
     frames = []
+    readFunc = cam.read if not undistort else cam.readUndistort
     while(True):
-        ret, frame = cam.read()     # Capture the frame
+        ret, frame = readFunc()     # Capture the frame
         cv2.imshow('frame',frame)   # Display the frame
         ch = cv2.waitKey(1) & 0xFF
         if ch == 27:                # escape
@@ -242,14 +246,14 @@ def captureFrames(cam=None):
     cv2CloseWindow('frame')
     return frames
 
-def streamVideo(cam=None, matrix=None, dist=None):
-    cam = cv2.VideoCapture(0) if cam is None else cam
+def streamVideo(cam=None, undistort=False):
+    if cam is None:
+        cam = cv2.VideoCapture(0)
     if not cam.open():
         return None
+    readFunc = cam.read if not undistort else cam.readUndistort
     while(True):
-        ret, frame = cam.read(video=True)     # Capture the frame
-        if matrix is not None and dist is not None:
-            frame = cv2.undistort(frame,matrix,dist)
+        ret, frame = readFunc(video=True)     # Capture the frame
         cv2.imshow('frame',frame)   # Display the frame
         ch = cv2.waitKey(1) & 0xFF
         if ch == 27:                # escape
@@ -257,17 +261,16 @@ def streamVideo(cam=None, matrix=None, dist=None):
     #cam.release()                   # release the capture
     cv2CloseWindow('frame')
 
-def captureVideo(fname, cam=None, matrix=None, dist=None, view=True):
+def captureVideo(fname, cam=None, undistort=False):
     # TODO update to use picamera's native capture method
     cam = Camera(0) if cam is None else cam
     if not cam.open():
         return None
+    readFunc = cam.read if not undistort else cam.readUndistort
     video = cv2.VideoWriter(fname,-1,cam.fps,cam.resolution)
     #frames = []
     while(True):
-        ret, frame = cam.read(video=True)     # Capture the frame
-        if matrix is not None and dist is not None:
-            frame = cv2.undistort(frame,matrix,dist)
+        ret, frame = readFunc(video=True)     # Capture the frame
         #if view:  # how can I do keyboard controls to escape without streaming the video?
         video.write(frame)
         #frames.append(frame)
