@@ -1,2 +1,2 @@
 # dCamera
-library for working with cameras in python
+A library for working with USB, PointGrey, and Raspberry Pi cameras in python. Including support for stereo cameras.
