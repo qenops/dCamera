@@ -4,7 +4,7 @@ __author__ = ('David Dunn')
 __version__ = '0.1'
 
 import numpy as np
-import cv2
+import cv2, time
 import dCamera as dc
 try:
     import RPi.GPIO as gp
@@ -14,7 +14,7 @@ except ImportError:
 HARDWARE = {'USB':0,'multiBoard':1,'multiPi':2,'computePi':3}
 MODE = {'separate':0,'sideBySide':1,'topBottom':2,'crosseyed':3}
 
-class StereoCamera(Camera):
+class StereoCamera(dc.Camera):
     ''' A stereo camera which stores the intrinsic matrix and distiortion for right and left cameras
         as well as the transformation between the two cameras including essential nd fundamental matricies 
     '''
@@ -22,6 +22,7 @@ class StereoCamera(Camera):
         self.backend = backend
         self.hardware = hardware
         self.gp_init = False
+        self.resolution = None  # resolution of each of the left and right cameras
         self.lfCam = None
         self.lfMatrix = np.identity(3)
         self.lfDistortion = [0,0,0,0,0]
@@ -34,6 +35,19 @@ class StereoCamera(Camera):
         self.T = np.zeros(3)
         self.E = np.identity(3)
         self.F = np.identity(3)
+        self.error = 100
+        self.lfR = None
+        self.lfP = None
+        self.rtR = None
+        self.rtP = None
+        self.Q = None
+        self.lfMapX = None
+        self.lfMapY = None
+        self.rtMapX = None
+        self.rtMapY = None
+        self.maxDisparity = 128
+        self.blockSize = 9
+        self.disparityProcessor = None
         self.mode = MODE['sideBySide']
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
@@ -44,6 +58,7 @@ class StereoCamera(Camera):
                 self.pin_en2 = 12
                 self.GPinit()
                 self.lfCam = dc.Camera(backend=dc.BACKEND['picamera'],fps=30,shutter_speed=30000,iso=200,awb_mode='off')
+                self.resolution = self.lfCam.resolution
             else:
                 raise ValueError('dCamera.stereo:   Hardware setup not supported yet.')
         else:
@@ -51,7 +66,7 @@ class StereoCamera(Camera):
     def open(self):
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
-                self.lfCam.open()
+                return self.lfCam.open()
     def close(self):
         if self.gp_init:
             gp.cleanup((self.pin_sel, self.pin_en1, self.pin_en2))
@@ -72,24 +87,26 @@ class StereoCamera(Camera):
         self.lfCam.matrix = self.lfMatrix
         self.lfCam.distortion = self.lfDistortion
         self.lfCam.error = self.lfError
+        self.lfCam.mapX = self.lfMapX
+        self.lfCam.mapY = self.lfMapY
     def GPselectRight(self):
         gp.output(self.pin_sel, gp.HIGH)
         self.lfCam.matrix = self.rtMatrix
         self.lfCam.distortion = self.rtDistortion
         self.lfCam.error = self.rtError
+        self.lfCam.mapX = self.rtMapX
+        self.lfCam.mapY = self.rtMapY
     def read(self, video=True, undistort=False):
+        '''note for cv2 backend, we should use grab(), retrieve() instead of read()'''
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
+                readFunc = self.lfCam.read if not undistort else self.lfCam.readUndistort
                 self.GPselectLeft()
-                readFunc = lfCam.read if not undistort else lfCam.readUndistort
+                time.sleep(.015)
                 leftImg = readFunc(video=video)
                 self.GPselectRight()
-                readFunc = lfCam.read if not undistort else lfCam.readUndistort
+                time.sleep(.015)
                 rightImg = readFunc(video=video)
-                if leftImg[0] == 1:
-                    leftImg = leftImg[1]
-                if rightImg[0] == 1:
-                    rightImg = rightImg[1]
         if self.mode == MODE['separate']:
             return leftImg,rightImg
         if self.mode == MODE['sideBySide']:
@@ -100,41 +117,71 @@ class StereoCamera(Camera):
             return np.hstack((rightImg,leftImg))
     def readUndistort(self, video=True):
         return self.read(video, True)
-    def view(self):
-        dc.streamVideo(self)
-    def viewUndistort(self):
-        dc.streamVideo(self, True)
-    def captureFrames(self):
-        return captureFrames(self)
-    def calibrateLeft(self):
+    def readDisparity(self, maxDisp=128, blockSize=11):
+        disparityProcessor = cv2.StereoSGBM_create(0,maxDisp,blockSize)
+        oldMode = self.mode
+        self.mode = MODE['separate']
+        imageA, imageB = self.read()
+        grayA = dc.toGray(imageA)
+        grayB = dc.toGray(imageB)
+        disparity = disparityProcessor.compute(grayA,grayB)
+        #maybe do filtering?
+        #cv2.filterSpeckles(disparity, 0, 4000,128)
+        #something about disparity being scaled by 16?
+        dispScaled = (disparity / 16.).astype(np.uint8) + abs(disparity.min())
+        return dispScaled
+    def calibrateLeft(self, gridCorners, gridScale):
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
                 self.GPselectLeft()
-                ret = self.lfCam.calibrate()
-                if ret < self.lfError:
-                    self.lfMatrix = self.lfCam.matrix
-                    self.lfDistortion = self.lfCam.distortion
-                    self.lfError = self.lfCam.error
-
-    def calibrateLeft(self):
+                ret = self.lfCam.calibrate(gridCorners, gridScale)
+                matrix = self.lfCam.matrix
+                dist = self.lfCam.distortion
+        if ret < self.lfError:
+            self.lfMatrix = matrix
+            self.lfDistortion = dist
+            self.lfError = ret
+            self.lfMapX, self.lfMapY = cv2.initUndistortRectifyMap(self.lfMatrix,self.lfDistortion,np.eye(3),self.lfMatrix,self.resolution,cv2.CV_16SC2)
+        return ret
+    def calibrateRight(self, gridCorners, gridScale):
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
                 self.GPselectRight()
-                ret = self.lfCam.calibrate()
-                if ret < self.rtError:
-                    self.rtMatrix = self.lfCam.matrix
-                    self.rtDistortion = self.lfCam.distortion
-                    self.rtError = self.lfCam.error
+                ret = self.lfCam.calibrate(gridCorners, gridScale)
+                matrix = self.lfCam.matrix
+                dist = self.lfCam.distortion
+        if ret < self.rtError:
+            self.rtMatrix = matrix
+            self.rtDistortion = dist
+            self.rtError = ret
+            self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix,self.rtDistortion,np.eye(3),self.rtMatrix,self.resolution,cv2.CV_16SC2)
+        return ret
+    def calibrateStereo(self, gridCorners, gridScale):
+        if self.lfError >= 1:
+            ret = self.calibrateLeft(gridCorners, gridScale)
+            print('Left Camera Calibration Error: %f'%ret)
+        if self.rtError >= 1:
+            ret = self.calibrateRight(gridCorners, gridScale)
+            print('Right Camera Calibration Error: %f'%ret)
+        oldMode = self.mode
+        self.mode = MODE['separate']
+        images = dc.captureFrames(self)
+        imagesA, imagesB = zip(*images)
+        ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,flags=cv2.CALIB_FIX_INTRINSIC)
+        if ret < self.error:
+            self.R = R
+            self.T = T
+            self.E = E
+            self.F = F
+        self.mode = oldMode
+        return ret, R, T, E, F
+    def rectify(self):
+        self.lfR, self.rtR, self.lfP, self.rtP, self.Q, *_ = cv2.stereoRectify(self.lfMatrix,self.lfDistortion,self.rtMatrix,self.rtDistortion,self.resolution,self.R,self.T)
+        self.lfMapX, self.lfMapY = cv2.initUndistortRectifyMap(self.lfMatrix, self.lfDistortion, self.lfR, self.lfP, self.resolution, cv2.CV_16SC2)
+        self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix, self.rtDistortion, self.rtR, self.rtP, self.resolution, cv2.CV_16SC2)
 
-    def calibrateStereo(self):
-        self.calibrateLeft
-        self.calibrateRight
-
-        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = calibrateStereo()
-
-
-def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, **kwargs)
-''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
+def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, **kwargs):
+    ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
     cameraMatrix1 = kwargs.get('matrixA',np.eye(3))
     distCoeffs1 = kwargs.get('distortionA',np.zeros([14]))
     cameraMatrix2 = kwargs.get('matrixB',np.eye(3))
@@ -171,3 +218,4 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, **kwargs)
     #dc.slideShow(markedImages)
     ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],**kwargs)
     return ret, mtx1, dist1, mtx2, dist2, R, T, E, F
+

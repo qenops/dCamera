@@ -49,6 +49,8 @@ class Camera(object):
         self.matrix = np.identity(3)
         self.distortion = [0,0,0,0,0]
         self.error = 1
+        self.mapX = None
+        self.mapY = None
     def open(self):
         if self.id is None:
             return 0
@@ -103,35 +105,37 @@ class Camera(object):
     def read(self, video=False):
         if self.open():
             if self.backend == BACKEND['cv2']:
-                return self._cap.read()
+                ret, img = self._cap.read()
+                if ret != 1:
+                    raise IOError('Camera image not captured')
+                return img
             elif self.backend == BACKEND['ptGrey']:
-                return (1,self._cap.GrabNumPyImage('bgr'))
+                return self._cap.GrabNumPyImage('bgr')
             elif self.backend == BACKEND['picamera']:
                 if not video:
                     self._continuousCapture = None
                     self._cam.capture(self._cap, format='bgr')
                     image = self._cap.array
                     self._cap.truncate(0)
-                    return (1,image)
+                    return image
                 else:
                     if self._continuousCapture is None:
                         self._continuousCapture = self._cam.capture_continuous(self._cap, format='bgr', use_video_port=True)
                     frame = next(self._continuousCapture)
                     image = frame.array
                     self._cap.truncate(0)
-                    return (1,image)
+                    return image
     def readUndistort(self, video=False):
-        ret, image = self.read(video)
-        return ret, cv2.undistort(image,self.matrix,self.distortion)
+        image = self.read(video)
+        if self.mapX is None or self.mapY is None:
+            self.mapX, self.mapY = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),self.matrix,self.resolution,cv2.CV_16SC2)
+        return cv2.remap(imgage,self.mapX,self.mapY,cv2.INTER_LINEAR)
     def view(self):
-        if self.open():
-            streamVideo(self)
+        streamVideo(self)
     def viewUndistort(self):
-        if self.open():
-            streamVideo(self, True)
+        streamVideo(self, True)
     def captureFrames(self):
-        if self.open():
-            return captureFrames(self)
+        return captureFrames(self)
     def getResolution(self, kwargs=None):
         if self.backend == BACKEND['picamera']:
             return kwargs.get('resolution',kwargs.get('res',(640,480)))
@@ -143,15 +147,17 @@ class Camera(object):
                     return (int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
             elif self.backend == BACKEND['ptGrey']:
                 return self._cap.GetSize()
-    def calibrate(self, gridCorners, **kwargs):     # flags=cv2.CALIB_FIX_K3
+    def calibrate(self, gridCorners, gridScale, **kwargs):     # flags=cv2.CALIB_FIX_K3
         images = captureFrames(self)
         if __TEST__MODE__ and images is None:
             images = [cv2.imread('../data/calibration/%02d.png' % i) for i in range(8)]
-        ret, matrix, dist = calibrate(images, gridCorners, **kwargs)
+        ret, matrix, dist = calibrate(images, gridCorners, gridScale, **kwargs)
         if ret < self.error:
             self.error = ret
             self.matrix = matrix
             self.distortion = dist
+            self.mapX = None
+            self.mapY = None
         return ret
     def undistort(self, images, alpha=0.):
         toReturn = []
@@ -235,8 +241,10 @@ def captureFrames(cam=None, undistort=False):
     frames = []
     readFunc = cam.read if not undistort else cam.readUndistort
     while(True):
-        ret, frame = readFunc()     # Capture the frame
-        cv2.imshow('frame',frame)   # Display the frame
+        frame = readFunc()          # Capture the frame
+        separate = getattr(cam, 'mode', 1)
+        img = frame if separate != 0 else np.hstack(frame)
+        cv2.imshow('frame',img)   # Display the frame
         ch = cv2.waitKey(1) & 0xFF
         if ch == 27:                # escape
             break
@@ -253,7 +261,9 @@ def streamVideo(cam=None, undistort=False):
         return None
     readFunc = cam.read if not undistort else cam.readUndistort
     while(True):
-        ret, frame = readFunc(video=True)     # Capture the frame
+        frame = readFunc(video=True)     # Capture the frame
+        separate = getattr(cam, 'mode', 1)
+        frame = frame if separate != 0 else np.hstack(frame)
         cv2.imshow('frame',frame)   # Display the frame
         ch = cv2.waitKey(1) & 0xFF
         if ch == 27:                # escape
@@ -270,7 +280,7 @@ def captureVideo(fname, cam=None, undistort=False):
     video = cv2.VideoWriter(fname,-1,cam.fps,cam.resolution)
     #frames = []
     while(True):
-        ret, frame = readFunc(video=True)     # Capture the frame
+        frame = readFunc(video=True)     # Capture the frame
         #if view:  # how can I do keyboard controls to escape without streaming the video?
         video.write(frame)
         #frames.append(frame)
