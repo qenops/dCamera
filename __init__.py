@@ -129,13 +129,15 @@ class Camera(object):
         image = self.read(video)
         if self.mapX is None or self.mapY is None:
             self.mapX, self.mapY = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),self.matrix,self.resolution,cv2.CV_16SC2)
-        return cv2.remap(imgage,self.mapX,self.mapY,cv2.INTER_LINEAR)
+        return cv2.remap(image,self.mapX,self.mapY,cv2.INTER_LINEAR)
     def view(self):
         streamVideo(self)
     def viewUndistort(self):
         streamVideo(self, True)
     def captureFrames(self):
         return captureFrames(self)
+    def captureUndistort(self):
+        return captureFrames(self, True)
     def getResolution(self, kwargs=None):
         if self.backend == BACKEND['picamera']:
             return kwargs.get('resolution',kwargs.get('res',(640,480)))
@@ -234,12 +236,12 @@ def slideShow(images,scale=False):
         current = current % len(images)
     cv2CloseWindow('frame')
 
-def captureFrames(cam=None, undistort=False):
+def captureFrames(cam=None, undistort=False, disparity=False):
     cam = cv2.VideoCapture(0) if cam is None else cam
     if not cam.open():
         return None
     frames = []
-    readFunc = cam.read if not undistort else cam.readUndistort
+    readFunc = cam.read if not undistort else cam.readUndistort if not disparity else cam.readDisparity
     while(True):
         frame = readFunc()          # Capture the frame
         separate = getattr(cam, 'mode', 1)
@@ -254,12 +256,12 @@ def captureFrames(cam=None, undistort=False):
     cv2CloseWindow('frame')
     return frames
 
-def streamVideo(cam=None, undistort=False):
+def streamVideo(cam=None, undistort=False, disparity=False):
     if cam is None:
         cam = cv2.VideoCapture(0)
     if not cam.open():
         return None
-    readFunc = cam.read if not undistort else cam.readUndistort
+    readFunc = cam.read if not undistort else cam.readUndistort if not disparity else cam.readDisparity
     while(True):
         frame = readFunc(video=True)     # Capture the frame
         separate = getattr(cam, 'mode', 1)
@@ -271,12 +273,12 @@ def streamVideo(cam=None, undistort=False):
     #cam.release()                   # release the capture
     cv2CloseWindow('frame')
 
-def captureVideo(fname, cam=None, undistort=False):
+def captureVideo(fname, cam=None, undistort=False, displarity=False):
     # TODO update to use picamera's native capture method
     cam = Camera(0) if cam is None else cam
     if not cam.open():
         return None
-    readFunc = cam.read if not undistort else cam.readUndistort
+    readFunc = cam.read if not undistort else cam.readUndistort if not disparity else cam.readDisparity
     video = cv2.VideoWriter(fname,-1,cam.fps,cam.resolution)
     #frames = []
     while(True):

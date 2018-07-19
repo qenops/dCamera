@@ -26,15 +26,15 @@ class StereoCamera(dc.Camera):
         self.lfCam = None
         self.lfMatrix = np.identity(3)
         self.lfDistortion = [0,0,0,0,0]
-        self.lfError = 1
+        self.lfError = 5
         self.rtCam = None
         self.rtMatrix = np.identity(3)
         self.rtDistortion = [0,0,0,0,0]
-        self.rtError = 1
-        self.R = np.identity(3)
-        self.T = np.zeros(3)
-        self.E = np.identity(3)
-        self.F = np.identity(3)
+        self.rtError = 5
+        self.R = None
+        self.T = None
+        self.E = None
+        self.F = None
         self.error = 100
         self.lfR = None
         self.lfP = None
@@ -117,11 +117,11 @@ class StereoCamera(dc.Camera):
             return np.hstack((rightImg,leftImg))
     def readUndistort(self, video=True):
         return self.read(video, True)
-    def readDisparity(self, maxDisp=128, blockSize=11):
+    def readDisparity(self, video=True, maxDisp=128, blockSize=11):
         disparityProcessor = cv2.StereoSGBM_create(0,maxDisp,blockSize)
         oldMode = self.mode
         self.mode = MODE['separate']
-        imageA, imageB = self.read()
+        imageA, imageB = self.read(video)
         grayA = dc.toGray(imageA)
         grayB = dc.toGray(imageB)
         disparity = disparityProcessor.compute(grayA,grayB)
@@ -130,6 +130,10 @@ class StereoCamera(dc.Camera):
         #something about disparity being scaled by 16?
         dispScaled = (disparity / 16.).astype(np.uint8) + abs(disparity.min())
         return dispScaled
+    def viewDisparity(self):
+        dc.streamVideo(self, True, True)
+    def captureDisparity(self):
+        return dc.captureFrames(self, True, True)
     def calibrateLeft(self, gridCorners, gridScale):
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
@@ -167,7 +171,7 @@ class StereoCamera(dc.Camera):
         self.mode = MODE['separate']
         images = dc.captureFrames(self)
         imagesA, imagesB = zip(*images)
-        ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,flags=cv2.CALIB_FIX_INTRINSIC)
+        ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,R=np.copy(self.R),T=np.copy(self.T),flags=cv2.CALIB_FIX_INTRINSIC)
         if ret < self.error:
             self.R = R
             self.T = T
@@ -180,14 +184,14 @@ class StereoCamera(dc.Camera):
         self.lfMapX, self.lfMapY = cv2.initUndistortRectifyMap(self.lfMatrix, self.lfDistortion, self.lfR, self.lfP, self.resolution, cv2.CV_16SC2)
         self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix, self.rtDistortion, self.rtR, self.rtP, self.resolution, cv2.CV_16SC2)
 
-def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, **kwargs):
+def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **kwargs):
     ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
-    cameraMatrix1 = kwargs.get('matrixA',np.eye(3))
-    distCoeffs1 = kwargs.get('distortionA',np.zeros([14]))
-    cameraMatrix2 = kwargs.get('matrixB',np.eye(3))
-    distCoeffs2 = kwargs.get('distortionB',np.zeros([14]))
+    cameraMatrix1 = kwargs.pop('matrixA',np.eye(3))
+    distCoeffs1 = kwargs.pop('distortionA',np.zeros([14]))
+    cameraMatrix2 = kwargs.pop('matrixB',np.eye(3))
+    distCoeffs2 = kwargs.pop('distortionB',np.zeros([14]))
     # termination criteria
-    criteria = kwargs.get('criteria',(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+    criteria = kwargs.pop('criteria',(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
     # prepare object points, define top left gridCorner as origin: like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
     objp = np.zeros((gridCorners[0]*gridCorners[1],3), np.float32)
     objp[:,:2] = np.mgrid[0:gridCorners[0],0:gridCorners[1]].T.reshape(-1,2)
@@ -216,6 +220,12 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, **kwargs):
         #markedImages.append(temp)
     print('Using %s of %s images.'%(len(objpoints), len(imagesA)))
     #dc.slideShow(markedImages)
-    ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],**kwargs)
+    # calculate flags
+    flags = kwargs.pop('flags',0)
+    if R is not None and T is not None:
+        flags += cv2.CALIB_USE_EXTRINSIC_GUESS
+        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrateExtended(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],R=R,T=T, flags=flags, **kws)
+    else:
+        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],R=R,T=T, flags=flags, **kws)
     return ret, mtx1, dist1, mtx2, dist2, R, T, E, F
 
