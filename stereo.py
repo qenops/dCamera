@@ -121,12 +121,14 @@ class StereoCamera(dc.Camera):
         disparityProcessor = cv2.StereoSGBM_create(0,maxDisp,blockSize)
         oldMode = self.mode
         self.mode = MODE['separate']
-        imageA, imageB = self.read(video)
+        imageA, imageB = self.read(video,True)
+        self.mode = oldMode
         grayA = dc.toGray(imageA)
         grayB = dc.toGray(imageB)
         disparity = disparityProcessor.compute(grayA,grayB)
         #maybe do filtering?
-        #cv2.filterSpeckles(disparity, 0, 4000,128)
+        #disp, _ = cv2.filterSpeckles(disparity, 0, 4000,128)
+        #disp = cv2.medianBlur(disparity,5)
         #something about disparity being scaled by 16?
         dispScaled = (disparity / 16.).astype(np.uint8) + abs(disparity.min())
         return dispScaled
@@ -160,7 +162,7 @@ class StereoCamera(dc.Camera):
             self.rtError = ret
             self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix,self.rtDistortion,np.eye(3),self.rtMatrix,self.resolution,cv2.CV_16SC2)
         return ret
-    def calibrateStereo(self, gridCorners, gridScale):
+    def calibrateStereo(self, gridCorners, gridScale, useExisting=True):
         if self.lfError >= 1:
             ret = self.calibrateLeft(gridCorners, gridScale)
             print('Left Camera Calibration Error: %f'%ret)
@@ -171,12 +173,16 @@ class StereoCamera(dc.Camera):
         self.mode = MODE['separate']
         images = dc.captureFrames(self)
         imagesA, imagesB = zip(*images)
-        ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,R=np.copy(self.R),T=np.copy(self.T),flags=cv2.CALIB_FIX_INTRINSIC)
+        if useExisting:
+            ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,R=np.copy(self.R),T=np.copy(self.T),flags=cv2.CALIB_FIX_INTRINSIC)
+        else:
+            ret, *_, R, T, E, F = calibrateStereo(imagesA,imagesB,gridCorners,gridScale,flags=cv2.CALIB_FIX_INTRINSIC)
         if ret < self.error:
             self.R = R
             self.T = T
             self.E = E
             self.F = F
+            self.error = ret
         self.mode = oldMode
         return ret, R, T, E, F
     def rectify(self):
@@ -184,14 +190,14 @@ class StereoCamera(dc.Camera):
         self.lfMapX, self.lfMapY = cv2.initUndistortRectifyMap(self.lfMatrix, self.lfDistortion, self.lfR, self.lfP, self.resolution, cv2.CV_16SC2)
         self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix, self.rtDistortion, self.rtR, self.rtP, self.resolution, cv2.CV_16SC2)
 
-def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **kwargs):
+def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **kws):
     ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
-    cameraMatrix1 = kwargs.pop('matrixA',np.eye(3))
-    distCoeffs1 = kwargs.pop('distortionA',np.zeros([14]))
-    cameraMatrix2 = kwargs.pop('matrixB',np.eye(3))
-    distCoeffs2 = kwargs.pop('distortionB',np.zeros([14]))
+    cameraMatrix1 = kws.pop('matrixA',np.eye(3))
+    distCoeffs1 = kws.pop('distortionA',np.zeros([14]))
+    cameraMatrix2 = kws.pop('matrixB',np.eye(3))
+    distCoeffs2 = kws.pop('distortionB',np.zeros([14]))
     # termination criteria
-    criteria = kwargs.pop('criteria',(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
+    criteria = kws.pop('criteria',(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001))
     # prepare object points, define top left gridCorner as origin: like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
     objp = np.zeros((gridCorners[0]*gridCorners[1],3), np.float32)
     objp[:,:2] = np.mgrid[0:gridCorners[0],0:gridCorners[1]].T.reshape(-1,2)
@@ -221,11 +227,19 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **
     print('Using %s of %s images.'%(len(objpoints), len(imagesA)))
     #dc.slideShow(markedImages)
     # calculate flags
-    flags = kwargs.pop('flags',0)
+    flags = kws.pop('flags',0)
     if R is not None and T is not None:
         flags += cv2.CALIB_USE_EXTRINSIC_GUESS
-        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrateExtended(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],R=R,T=T, flags=flags, **kws)
+        ret, mtx1, dist1, mtx2, dist2, R, T, E, F, perViewErr = cv2.stereoCalibrateExtended(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],R=R,T=T, flags=flags, **kws)
     else:
-        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1],R=R,T=T, flags=flags, **kws)
+        ret, mtx1, dist1, mtx2, dist2, R, T, E, F = cv2.stereoCalibrate(objpoints, imgpointsA, imgpointsB, cameraMatrix1, distCoeffs1, cameraMatrix2, distCoeffs2, grayA.shape[::-1], flags=flags, **kws)
     return ret, mtx1, dist1, mtx2, dist2, R, T, E, F
 
+def rectifyCheck(image, numLines=20):
+    iy, ix, channels = image.shape if len(image.shape)>2 else [image.shape[0], image.shape[1], 1]
+    marked = np.copy(image)
+    if channels == 1:
+        marked = np.dstack((marked,marked,marked))
+    marked[list(range(iy//numLines//2,iy,iy//numLines)),:,:] = (0,0,np.max(marked))
+    return marked
+    
