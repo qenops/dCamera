@@ -229,9 +229,11 @@ def slideShow(images,scale=False):
         ch = cv2.waitKey() 
         if ch == -1 or ch & 0xFF == 27:         # escape
             break
-        elif ch == 1113937:         # left
+        #else:
+        #    print(ch)
+        elif ch == 81: #1113937:         # left
             current -= 1
-        elif ch == 1113939:         # right
+        elif ch == 83: #1113939:         # right
             current += 1
         current = current % len(images)
     cv2CloseWindow('frame')
