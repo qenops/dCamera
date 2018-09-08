@@ -83,14 +83,22 @@ class StereoCamera(dc.Camera):
         gp.setup(self.pin_en1, gp.OUT, initial=gp.LOW)
         gp.setup(self.pin_en2, gp.OUT, initial=gp.HIGH)
     def GPselectLeft(self):
-        gp.output(self.pin_sel, gp.LOW)
+        try:
+            gp.output(self.pin_sel, gp.LOW)
+        except:
+            self.GPinit()
+            gp.output(self.pin_sel, gp.LOW)
         self.lfCam.matrix = self.lfMatrix
         self.lfCam.distortion = self.lfDistortion
         self.lfCam.error = self.lfError
         self.lfCam.mapX = self.lfMapX
         self.lfCam.mapY = self.lfMapY
     def GPselectRight(self):
-        gp.output(self.pin_sel, gp.HIGH)
+        try:
+            gp.output(self.pin_sel, gp.HIGH)
+        except:
+            self.GPinit()
+            gp.output(self.pin_sel, gp.HIGH)
         self.lfCam.matrix = self.rtMatrix
         self.lfCam.distortion = self.rtDistortion
         self.lfCam.error = self.rtError
