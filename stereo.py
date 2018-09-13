@@ -27,10 +27,12 @@ class StereoCamera(dc.Camera):
         self.lfMatrix = np.identity(3)
         self.lfDistortion = [0,0,0,0,0]
         self.lfError = 5
+        self.lfRoi = None
         self.rtCam = None
         self.rtMatrix = np.identity(3)
         self.rtDistortion = [0,0,0,0,0]
         self.rtError = 5
+        self.rtRoi = None
         self.R = None
         self.T = None
         self.E = None
@@ -59,6 +61,8 @@ class StereoCamera(dc.Camera):
                 self.GPinit()
                 self.lfCam = dc.Camera(backend=dc.BACKEND['picamera'],fps=30,shutter_speed=30000,iso=200,awb_mode='off')
                 self.resolution = self.lfCam.resolution
+                self.lfRoi = self.lfCam.roi
+                self.rtRoi = self.lfCam.roi
             else:
                 raise ValueError('dCamera.stereo:   Hardware setup not supported yet.')
         else:
@@ -93,6 +97,7 @@ class StereoCamera(dc.Camera):
         self.lfCam.error = self.lfError
         self.lfCam.mapX = self.lfMapX
         self.lfCam.mapY = self.lfMapY
+        self.lfCam.roi = self.lfRoi
     def GPselectRight(self):
         try:
             gp.output(self.pin_sel, gp.HIGH)
@@ -104,6 +109,7 @@ class StereoCamera(dc.Camera):
         self.lfCam.error = self.rtError
         self.lfCam.mapX = self.rtMapX
         self.lfCam.mapY = self.rtMapY
+        self.lfCam.roi = self.rtRoi
     def read(self, video=True, undistort=False):
         '''note for cv2 backend, we should use grab(), retrieve() instead of read()'''
         if self.backend == dc.BACKEND['picamera']:
@@ -197,6 +203,8 @@ class StereoCamera(dc.Camera):
         self.lfR, self.rtR, self.lfP, self.rtP, self.Q, *_ = cv2.stereoRectify(self.lfMatrix,self.lfDistortion,self.rtMatrix,self.rtDistortion,self.resolution,self.R,self.T)
         self.lfMapX, self.lfMapY = cv2.initUndistortRectifyMap(self.lfMatrix, self.lfDistortion, self.lfR, self.lfP, self.resolution, cv2.CV_16SC2)
         self.rtMapX, self.rtMapY = cv2.initUndistortRectifyMap(self.rtMatrix, self.rtDistortion, self.rtR, self.rtP, self.resolution, cv2.CV_16SC2)
+    def regionOfInterest(self,left,right):
+        return left[self.lfRoi[0][1]:self.lfRoi[1][1],self.lfRoi[0][0]:self.lfRoi[1][0],:], right[self.rtRoi[0][1]:self.rtRoi[1][1],self.rtRoi[0][0]:self.rtRoi[1][0],:]
 
 def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **kws):
     ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''

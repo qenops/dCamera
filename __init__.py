@@ -51,6 +51,7 @@ class Camera(object):
         self.error = 1
         self.mapX = None
         self.mapY = None
+        self.roi = np.array(((0,0),self.resolution), dtype=np.uint16)
     def open(self):
         if self.id is None:
             return 0
@@ -100,6 +101,7 @@ class Camera(object):
                 self._continuousCapture = None
                 self._cap.close()
                 self._cam.close()
+                self._cam = None
             self._cap = None
     release = close
     def read(self, video=False):
@@ -170,6 +172,8 @@ class Camera(object):
         for img in images:
             toReturn.append(cv2.remap(img,map1,map2,cv2.INTER_LINEAR))
         return toReturn
+    def regionOfInterest(self, img):
+        return img[self.roi[0][1]:self.roi[1][1],self.roi[0][0]:self.roi[1][0],:]
     def save(self, file):
         return np.savez(file,matrix=self.matrix,distortion=self.distortion,error=self.error)
     def load(self, file):
@@ -275,7 +279,7 @@ def streamVideo(cam=None, undistort=False, disparity=False):
     #cam.release()                   # release the capture
     cv2CloseWindow('frame')
 
-def captureVideo(fname, cam=None, undistort=False, displarity=False):
+def captureVideo(fname, cam=None, undistort=False, disparity=False):
     # TODO update to use picamera's native capture method
     cam = Camera(0) if cam is None else cam
     if not cam.open():
