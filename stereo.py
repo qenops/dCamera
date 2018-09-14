@@ -67,6 +67,9 @@ class StereoCamera(dc.Camera):
                 raise ValueError('dCamera.stereo:   Hardware setup not supported yet.')
         else:
             raise ValueError('dCamera.stereo:   Backend not supported yet.')
+    @property
+    def roi(self):
+        return [self.lfRoi,self.rtRoi]
     def open(self):
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
@@ -223,12 +226,14 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **
     imgpointsA = [] # 2d points in image plane.
     imgpointsB = [] # 2d points in image plane.
     #markedImages = [] # store the updated images
+    #flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FILTER_QUADS
+    #flags = cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FILTER_QUADS
     for imageA,imageB in zip(imagesA,imagesB):
         grayA = dc.toGray(imageA)
         grayB = dc.toGray(imageB)
         # Find the chess board corners
-        retA, cornersA = cv2.findChessboardCorners(grayA, gridCorners,None)
-        retB, cornersB = cv2.findChessboardCorners(grayB, gridCorners,None)
+        retA, cornersA = cv2.findChessboardCorners(grayA, gridCorners,flags)
+        retB, cornersB = cv2.findChessboardCorners(grayB, gridCorners,flags)
         # If found, add object points, image points (after refining them)
         if retA and retB:
             objpoints.append(objp)
@@ -237,8 +242,11 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **
             cv2.cornerSubPix(grayB,cornersB,(11,11),(-1,-1),criteria)
             imgpointsB.append(cornersB) 
         # Draw and display the corners
-        #temp = img
-        #cv2.drawChessboardCorners(temp, gridCorners, corners,ret)
+        #temp = imageA
+        #cv2.drawChessboardCorners(temp, gridCorners, cornersA,retA)
+        #markedImages.append(temp)
+        #temp = imageB
+        #cv2.drawChessboardCorners(temp, gridCorners, cornersB,retB)
         #markedImages.append(temp)
     print('Using %s of %s images.'%(len(objpoints), len(imagesA)))
     #dc.slideShow(markedImages)

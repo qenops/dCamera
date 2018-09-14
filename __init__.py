@@ -278,6 +278,44 @@ def streamVideo(cam=None, undistort=False, disparity=False):
             break
     #cam.release()                   # release the capture
     cv2CloseWindow('frame')
+    
+def tuneUndistort(cam):
+    if not cam.open():
+        return None
+    readFunc = cam.readUndistort
+    scale = .01
+    while(True):
+        frame = readFunc(video=True)     # Capture the frame
+        separate = getattr(cam, 'mode', 1)
+        frame = frame if separate != 0 else np.hstack(frame)
+        cv2.imshow('frame',frame)   # Display the frame
+        ch = cv2.waitKey(1) & 0xFF
+        if ch == 27:                # escape
+            break
+        elif ch > 80 and ch < 87:   # arrow key
+            if ch == 83: #right
+                cam.T += scale * np.array(((1,),(0,),(0,)))
+            elif ch == 81: #left
+                cam.T += scale * np.array(((-1,),(0,),(0,)))
+            elif ch == 82: #up
+                cam.T += scale * np.array(((0,),(1,),(0,)))
+            elif ch == 84: #down
+                cam.T += scale * np.array(((0,),(-1,),(0,)))
+            elif ch == 85: #page up
+                cam.T += scale * np.array(((0,),(0,),(1,)))
+            elif ch == 86: #page down
+                cam.T += scale * np.array(((0,),(0,),(-1,)))
+            cam.rectify()
+        elif ch == 112: #p
+            print(cam.T)
+        elif ch == 46: #>
+            scale *= .1
+            print('Scale is %s'%scale)
+        elif ch == 44: #<
+            scale *= 10
+            print('Scale is %s'%scale)
+    #cam.release()                   # release the capture
+    cv2CloseWindow('frame')
 
 def captureVideo(fname, cam=None, undistort=False, disparity=False):
     # TODO update to use picamera's native capture method
