@@ -67,10 +67,28 @@ class StereoCamera(dc.Camera):
                 raise ValueError('dCamera.stereo:   Hardware setup not supported yet.')
         else:
             raise ValueError('dCamera.stereo:   Backend not supported yet.')
+    def __copy__(self):
+        other = type(self)()
+        other.lfMatrix = self.lfMatrix
+        other.lfDistortion = self.lfDistortion
+        other.lfError = self.lfError
+        other.lfRoi = self.lfRoi
+        other.rtMatrix = self.rtMatrix
+        other.rtDistortion = self.rtDistortion
+        other.rtError = self.rtError
+        other.rtRoi = self.rtRoi
+        other.R = self.R
+        other.T = self.T
+        other.E = self.E
+        other.F = self.F
+        other.error = self.error
+        return other
     @property
     def roi(self):
         return [self.lfRoi,self.rtRoi]
     def open(self):
+        if not self.gp_init:
+            self.GPinit()
         if self.backend == dc.BACKEND['picamera']:
             if self.hardware == HARDWARE['multiBoard']:
                 return self.lfCam.open()
@@ -226,6 +244,7 @@ def calibrateStereo(imagesA, imagesB, gridCorners, gridScale, R=None, T=None, **
     imgpointsA = [] # 2d points in image plane.
     imgpointsB = [] # 2d points in image plane.
     #markedImages = [] # store the updated images
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH
     #flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FILTER_QUADS
     #flags = cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FILTER_QUADS
     for imageA,imageB in zip(imagesA,imagesB):
