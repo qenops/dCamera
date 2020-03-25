@@ -5,18 +5,20 @@ __version__ = '0.2'
 
 import numpy as np
 import cv2
+import time
+
+BACKEND = {'cv2':0, 'ptGrey':1, 'picamera':2} # different camera APIs that are supported
 try:
     from shared_modules.pyfly2 import pyfly2
 except ImportError:
     print("Warning: ptGrey backend is not available.")
+    BACKEND['ptGrey'] = None
 try:
     from picamera import PiCamera
     from picamera.array import PiRGBArray
 except ImportError:
     print("Warning: picamera backend is not available.")
-import time
-
-BACKEND = {'cv2':0, 'ptGrey':1, 'picamera':2} # different camera APIs that are supported
+    BACKEND['picamera'] = None
 
 __TEST__MODE__ = False
 
