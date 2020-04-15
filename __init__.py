@@ -41,6 +41,7 @@ class Camera(object):
         self._context = None
         self.resolution = (0,0)
         self.resolution = self.getResolution(locals())
+        self.np_resolution = self.getNPResolution()
         self.fps = kwargs.get('fps', 15 if self.backend == BACKEND['ptGrey'] else 30)
         self.close()
         self.shutter_speed = kwargs.get('shutter_speed',0)
@@ -153,6 +154,8 @@ class Camera(object):
                     return (int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
             elif self.backend == BACKEND['ptGrey']:
                 return self._cap.GetSize()
+    def getNPResolution(self, kwargs=None):
+        return (self.resolution[1], self.resolution[0])
     def calibrate(self, gridCorners, gridScale, **kwargs):     # flags=cv2.CALIB_FIX_K3
         images = captureFrames(self)
         if __TEST__MODE__ and images is None:
