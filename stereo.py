@@ -14,6 +14,9 @@ except ImportError:
 HARDWARE = {'USB':0,'multiBoard':1,'multiPi':2,'computePi':3}
 MODE = {'separate':0,'sideBySide':1,'topBottom':2,'crosseyed':3}
 
+### TODO break off a camera transform class, which will contain the camera, matrix
+### distortion, error, R, T, E, and F for each camera
+
 class StereoCamera(dc.Camera):
     ''' A stereo camera which stores the intrinsic matrix and distiortion for right and left cameras
         as well as the transformation between the two cameras including essential nd fundamental matricies 
