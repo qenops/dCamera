@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 import time
 
-BACKEND = {'cv2':0, 'flyCap':1, 'picamera':2} # different camera APIs that are supported
+BACKEND = {'cv2':0, 'flyCap':1, 'picamera':2, 'spinnaker':3} # different camera APIs that are supported
 try:
     from shared_modules.pyfly2 import pyfly2
 except ImportError:
@@ -19,6 +19,11 @@ try:
 except ImportError:
     print("Warning: picamera backend is not available.")
     BACKEND['picamera'] = None
+try: 
+    import PySpin
+except ImportError:
+    print("Warning: Spinnaker backend is not available.")
+    BACKEND['spinnaker'] = None
 
 __TEST__MODE__ = False
 
@@ -34,13 +39,9 @@ class Camera(object):
         as provide methods for capturing and viewing content regardless of source of camera data
         By default uses cv2 backend - use subclasses for other backends
     '''
-    def __init__(self,id=0,**kwargs):
-        self.id = id
-        self._cam = None
-        self._cap = None
-        self._context = None
-        self.resolution = (0,0) # some cameras need to be open to get resolution
-        self.resolution = self.getResolution(locals())
+    def __init__(self,id=None,**kwargs):
+        self.id = 0 if id is None else id
+        self._cap = kwargs.get('_cap', None)
         self.fps = kwargs.get('fps', 30)
         self.close()
         self.shutter_speed = kwargs.get('shutter_speed',0)
@@ -53,10 +54,9 @@ class Camera(object):
         self.error = 1
         self.mapX = None
         self.mapY = None
-        self.roi = np.array(((0,0),self.resolution), dtype=np.uint16)
+        self.roi = np.array(((0,0),(0,0)), dtype=np.uint16)
+        self.roi[1] = (0,0) if self.resolution is None else self.resolution
     def open(self):
-        if self.id is None:
-            return 0
         if self._cap is None:
             self._cap = cv2.VideoCapture(self.id)
             if not self._cap.isOpened():          # check if we succeeded
@@ -88,7 +88,8 @@ class Camera(object):
         return captureFrames(self)
     def captureUndistort(self):
         return captureFrames(self, True)
-    def getResolution(self, kwargs=None):
+    @property
+    def resolution(self):
         if self.open():
             try:
                 return (int(self._cap.get(cv2.cv.CV_CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.cv.CV_CAP_PROP_FRAME_HEIGHT)))
@@ -127,15 +128,14 @@ class Camera(object):
         self.distortion = npzfile['distortion']
         self.error = npzfile['error']
 
-class FlyCamera(Camera):
+class FlyCamera(Camera): #TODO: rewrite to be similar to SpinCamera
     def __init__(self,id=None,**kwargs):
         if BACKEND['flyCap'] is None:
-            raise ImportError('dCamera Error: [pyFly2] interface not loaded!')
+            raise ImportError('dCamera: [pyFly2] interface not loaded!')
         super().__init__(id,**kwargs)
         self.fps = kwargs.get('fps', 15)
+        self._context = None
     def open(self):
-        if self.id is None:
-            return 0
         if self._cap is None:
             self._context = pyfly2.Context()
             if self._context.num_cameras < 1:
@@ -156,19 +156,21 @@ class FlyCamera(Camera):
     def read(self, video=False):
         if self.open():
             return self._cap.GrabNumPyImage('bgr')
-    def getResolution(self, kwargs=None):
+    @property
+    def resolution(self):
         if self.open():
             return self._cap.GetSize()
 
 class PiCamera(Camera):
     def __init__(self,id=None,**kwargs):
         if BACKEND['picamera'] is None:
-            raise ImportError('dCamera Error: [picamera] interface not loaded!')
+            raise ImportError('dCamera: [picamera] interface not loaded!')
         super().__init__(id,**kwargs)
+        self._cam = None
+        # No way to query resolution on a picamera
+        self._resolution = kwargs.get('resolution',kwargs.get('res',(640,480)))
         ## TODO get the serial number and put it in self.id
     def open(self):
-        if self.id is None:
-            return 0
         if self._cap is None:
             self._cam = PiCamera()
             self._cam.resolution = self.resolution
@@ -209,8 +211,86 @@ class PiCamera(Camera):
                 image = frame.array
                 self._cap.truncate(0)
                 return image
-    def getResolution(self, kwargs=None): # No way to query on a picamera
-        return kwargs.get('resolution',kwargs.get('res',(640,480)))
+    @property
+    def resolution(self): # No way to query on a picamera
+        return self._resolution
+
+class SpinCamera(Camera):
+    nTypePtr = [PySpin.CValuePtr,
+                PySpin.CBasePtr,
+                PySpin.CIntegerPtr,
+                PySpin.CBooleanPtr,
+                PySpin.CCommandPtr,
+                PySpin.CFloatPtr,
+                PySpin.CStringPtr,
+                PySpin.CRegisterPtr,
+                PySpin.CCategoryPtr,
+                PySpin.CEnumerationPtr,
+                PySpin.CEnumEntryPtr,
+                None, #PySpin.CPortPtr, #This one doesn't exist?
+                ]
+    def __init__(self,id=None,**kwargs):
+        if BACKEND['spinnaker'] is None:
+            raise ImportError('dCamera: [PySpin] interface not loaded!')
+        id = 0 if id is None else id
+        self._system = PySpin.System.GetInstance()
+        cameras = self._system.GetCameras()
+        self._cap = None
+        if id < len(cameras):   # id is < len(cameras); it is an index
+            self._cap = cameras[id]
+            TLnodemap = self._cap.GetTLDeviceNodeMap()
+            node = TLnodemap.GetNode('DeviceSerialNumber')
+            id = int(PySpin.CStringPtr(node).ToString())
+        else:   # id is a serial number 
+            for cam in cameras:
+                TLnodemap = cam.GetTLDeviceNodeMap()
+                node = TLnodemap.GetNode('DeviceSerialNumber')
+                if id == int(PySpin.CStringPtr(node).ToString()):
+                    self._cap = cam
+                    break
+            if self._cap is None:
+                raise ValueError(f'dCamera: Camera serial number {id} not found')
+        self._cap.Init()
+        super().__init__(id, _cap=self._cap, **kwargs)
+    def open(self):
+        if self._cap is not None:
+            #TODO need a test to see if already acquiring
+            self._cap.BeginAcquisition()
+            return 1
+        return 0
+    def close(self):
+        if self._cap is not None:
+            self._cap.EndAcquisition()
+    def release(self):
+        self.close()
+        self._cap.DeInit()
+        self._cap = None
+        self._system.ReleaseInstance()
+    def read(self, video=False):
+        if self.open():
+            #try:
+            frame = self._cap.GetNextImage()
+            if frame.IsIncomplete():
+                return  # should I do something else here?
+            else:
+                image = np.array(frame.GetData(), dtype='uint8').reshape((frame.GetHeight(),frame.GetWidth()))
+                frame.Release()
+                return image
+            #except PySpin.SpinnakerException:
+            #    logging.exception()
+    def getNodeValue(self, nodeName):
+        if self._cap is not None:
+            nodeMap = self._cap.GetNodeMap()
+            node = nodemap.GetNode(nodeName)
+            pType = nTypePtr[node.GetPrincipalInterfaceType()]
+            
+    @property
+    def maxResolution(self):
+
+    @property
+    def resolution(self):
+        if self._cap is not None:
+
 
 
 def toGray(image):
