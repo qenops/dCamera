@@ -1,7 +1,7 @@
 ﻿#!/usr/bin/python
  
 __author__ = ('David Dunn')
-__version__ = '0.2'
+__version__ = '0.3'
 
 import numpy as np
 import cv2
@@ -43,19 +43,15 @@ class Camera(object):
         self.id = 0 if id is None else id
         self._cap = kwargs.get('_cap', None)
         self.fps = kwargs.get('fps', 30)
-        self.close()
         self.shutter_speed = kwargs.get('shutter_speed',0)
         self.iso = kwargs.get('iso',0)
         self.exposure_mode = kwargs.get('exposure_mode','auto')
         self.awb_mode = kwargs.get('awb_mode','auto')
         self._continuousCapture = None
-        self.matrix = np.identity(3)
-        self.distortion = [0,0,0,0,0]
-        self.error = 1
-        self.mapX = None
-        self.mapY = None
         self.roi = np.array(((0,0),(0,0)), dtype=np.uint16)
         self.roi[1] = (0,0) if self.resolution is None else self.resolution
+        self.distortion = CameraDistortion()
+        self.nonDefaults = {}
     def open(self):
         if self._cap is None:
             self._cap = cv2.VideoCapture(self.id)
@@ -77,9 +73,7 @@ class Camera(object):
             return img     
     def readUndistort(self, video=False):
         image = self.read(video)
-        if self.mapX is None or self.mapY is None:
-            self.mapX, self.mapY = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),self.matrix,self.resolution,cv2.CV_16SC2)
-        return cv2.remap(image,self.mapX,self.mapY,cv2.INTER_LINEAR)
+        return self.distortion.undistort(image)
     def view(self):
         streamVideo(self)
     def viewUndistort(self):
@@ -97,36 +91,19 @@ class Camera(object):
                 return (int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     def getNPResolution(self, kwargs=None):
         return (self.resolution[1], self.resolution[0])
-    def calibrate(self, gridCorners, gridScale, **kwargs):     # flags=cv2.CALIB_FIX_K3
+    def regionOfInterest(self, img):
+        return img[self.roi[0][1]:self.roi[1][1],self.roi[0][0]:self.roi[1][0],:]
+    def calibrate(self, gridCorners, gridScale, **kwargs):
         images = captureFrames(self)
         if __TEST__MODE__ and images is None:
             images = [cv2.imread('../data/calibration/%02d.png' % i) for i in range(8)]
-        ret, matrix, dist = calibrate(images, gridCorners, gridScale, **kwargs)
-        if ret < self.error:
-            self.error = ret
-            self.matrix = matrix
-            self.distortion = dist
-            self.mapX = None
-            self.mapY = None
-        return ret
-    def undistort(self, images, alpha=0.):
-        toReturn = []
-        frame = cv2.undistort(frame,matrix,dist)
-        size = images[0].shape
-        newMtx,roi = cv2.getOptimalNewCameraMatrix(self.matrix,self.distortion,(size[1],size[0]),alpha)
-        map1, map2 = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),newMtx,(size[1],size[0]),cv2.CV_16SC2)
-        for img in images:
-            toReturn.append(cv2.remap(img,map1,map2,cv2.INTER_LINEAR))
-        return toReturn
-    def regionOfInterest(self, img):
-        return img[self.roi[0][1]:self.roi[1][1],self.roi[0][0]:self.roi[1][0],:]
+        return self.distortion.calibrate(images, gridCorners, gridScale, **kwargs)
     def save(self, file):
-        return np.savez(file,matrix=self.matrix,distortion=self.distortion,error=self.error)
+        return np.savez(file,distortion=self.distortion,nonDefaults=self.nonDefaults)
     def load(self, file):
         npzfile = np.load(file)
-        self.matrix = npzfile['matrix']
         self.distortion = npzfile['distortion']
-        self.error = npzfile['error']
+        self.nonDefaults = npzfile['nonDefaults']
 
 class FlyCamera(Camera): #TODO: rewrite to be similar to SpinCamera
     def __init__(self,id=None,**kwargs):
@@ -212,7 +189,7 @@ class PiCamera(Camera):
                 self._cap.truncate(0)
                 return image
     @property
-    def resolution(self): # No way to query on a picamera
+    def resolution(self): # No way to query on a picamera (we could get a frame and measure)
         return self._resolution
 
 class SpinCamera(Camera):
@@ -236,6 +213,8 @@ class SpinCamera(Camera):
         self._system = PySpin.System.GetInstance()
         cameras = self._system.GetCameras()
         self._cap = None
+        self._TLnodemap = None
+        self._nodemap = None
         if id < len(cameras):   # id is < len(cameras); it is an index
             self._cap = cameras[id]
             TLnodemap = self._cap.GetTLDeviceNodeMap()
@@ -250,48 +229,168 @@ class SpinCamera(Camera):
                     break
             if self._cap is None:
                 raise ValueError(f'dCamera: Camera serial number {id} not found')
+        self._TLnodemap = self._cap.GetTLDeviceNodeMap()
         self._cap.Init()
+        self._nodemap = self._cap.GetNodeMap()
         super().__init__(id, _cap=self._cap, **kwargs)
+        self.colorConverter = cv2.COLOR_BAYER_RG2RGB_EA
+    def isOpen(self):
+        '''None of the following works, so just going to try and set something
+        self._cap.AcquisitionStatus
+        self._cap.AcquisitionStatusSelector
+        node = self._nodemap.GetNode('PixelFormat')
+        PySpin.IsWritable(node)
+        node.GetAccessMode()
+        a = dc.PySpin.gcstring()
+        b = dc.PySpin.gcstring()
+        PySpin.CEnumerationPtr(node).GetProperty('pIsLocked',a,b)
+        '''
+        current = self.getNodeValue('PixelFormat')
+        try:
+            self.setNodeValue('PixelFormat', current)
+        except PySpin.SpinnakerException:
+            return True
+        return False
     def open(self):
         if self._cap is not None:
-            #TODO need a test to see if already acquiring
-            self._cap.BeginAcquisition()
-            return 1
+            if not self.isOpen():
+                self._cap.BeginAcquisition()
+                return 1
+            return 2
         return 0
     def close(self):
-        if self._cap is not None:
+        if self._cap is not None and self.isOpen():
             self._cap.EndAcquisition()
     def release(self):
         self.close()
         self._cap.DeInit()
+        self._nodemap = None
         self._cap = None
+        self._TLnodemap = None
         self._system.ReleaseInstance()
     def read(self, video=False):
         if self.open():
             #try:
             frame = self._cap.GetNextImage()
             if frame.IsIncomplete():
+                print('frame incomplete')
                 return  # should I do something else here?
             else:
-                image = np.array(frame.GetData(), dtype='uint8').reshape((frame.GetHeight(),frame.GetWidth()))
+                image = np.array(frame.GetData(), dtype='uint8').reshape((frame.GetHeight(),frame.GetWidth(),-1))
                 frame.Release()
-                return image
+                color = cv2.cvtColor(image, self.colorConverter) if self.colorConverter is not None else image
+                return color
             #except PySpin.SpinnakerException:
             #    logging.exception()
     def getNodeValue(self, nodeName):
-        if self._cap is not None:
-            nodeMap = self._cap.GetNodeMap()
-            node = nodemap.GetNode(nodeName)
-            pType = nTypePtr[node.GetPrincipalInterfaceType()]
-            
+        '''we could cache the pointers for the nodes in a dict, but 
+        I don't think that would be advantageous '''
+        if self._nodemap is not None:
+            node = self._nodemap.GetNode(nodeName)
+            if not PySpin.IsReadable(node) and not PySpin.IsAvailable(node):
+                print(f"{nodeName} is not readable or available")
+                return None
+            interface = node.GetPrincipalInterfaceType()
+            pType = self.nTypePtr[interface]
+            if interface in [2,3,5,6,10]: # Not sure if Enum belongs here or not
+                return pType(node).GetValue()
+            elif interface == 9: # EnumerationPtrs don't have Get Value()
+                return pType(node).GetCurrentEntry().GetSymbolic()
+            elif interface == 4: # Command Ptr
+                pass
+            elif interface == 7: # Register Ptr
+                pass
+            elif interface == 8: # Category Ptr
+                pass
+            elif interface == 11: # Ports don't have values?
+                pass
+    def setNodeValue(self, nodeName, value):
+        if self._nodemap is not None:
+            node = self._nodemap.GetNode(nodeName)
+            if not PySpin.IsWritable(node) and not PySpin.IsAvailable(node):
+                print(f"{nodeName} is not writeable or available")
+                return 0
+            interface = node.GetPrincipalInterfaceType()
+            pType = self.nTypePtr[interface]
+            if interface in [2,3,5,6]: 
+                pType(node).SetValue(value)
+                self.nonDefaults[nodeName] = value
+                return 1
+            elif interface == 9: # Enumeration will pass name of enum
+                intValue = pType(node).GetEntryByName(value).GetValue()
+                pType(node).SetIntValue(intValue)
+                self.nonDefaults[nodeName] = value
+                return 1
+            elif interface == 4: # Command Ptr
+                pass
+            elif interface == 7: # Register Ptr
+                pass
+            elif interface == 8: # Category Ptr
+                pass
+            elif interface == 11: # Ports don't have values?
+                pass
     @property
     def maxResolution(self):
-
+        return self.getNodeValue('WidthMax'), self.getNodeValue('HeightMax')
     @property
     def resolution(self):
-        if self._cap is not None:
+        return self.getNodeValue('Width'), self.getNodeValue('Height')
+    @resolution.setter
+    def resolution(self, value):
+        self.setNodeValue('Width', value[0])
+        self.setNodeValue('Height', value[1])
+    def setFormatFast(self):
+        if not self.isOpen():
+            self.setNodeValue('PixelFormat', 'BayerRG8')
+            self.setNodeValue('IspEnable', False)
+            self.colorConverter = cv2.COLOR_BAYER_RG2RGB_EA
+    def setFormatHigh(self):
+        if not self.isOpen():
+            self.setNodeValue('PixelFormat', 'YCbCr8')
+            self.colorConverter  = cv2.COLOR_YCrCb2RGB
+    def load(self, file):
+        super().load(file)
+        for k,v in self.nonDefaults:
+            self.setNodeValue(k, v)
 
 
+class CameraDistortion(object):
+    ''' these store the parameters and functions for calculating and fixing
+        camera distortion
+    '''
+    def __init__(self, **kwargs):
+        self.matrix = kwargs.get('matrix', np.identity(3))
+        self.distortion = kwargs.get('distortion', [0,0,0,0,0])
+        self.error = kwargs.get('error', 1)
+        self.mapX = None
+        self.mapY = None
+        self.resolution = None
+        self.interpolation = cv2.INTER_LINEAR
+    def undistort(self, image): #TODO fix image resolution -> numpy flipping
+        if self.mapX is None or self.mapY is None or image.shape != self.resolution:
+            self.resolution = image.shape
+            self.mapX, self.mapY = self.getRemaps()
+        return cv2.remap(image, self.mapX, self.mapY, self.interpolation)
+    def getRemaps(self):
+        return cv2.initUndistortRectifyMap(self.matrix, self.distortion, np.eye(3), self.matrix, self.resolution, cv2.CV_16SC2)
+    def calibrate(self, images, gridCorners, gridScale, **kwargs):     # flags=cv2.CALIB_FIX_K3
+        ret, matrix, dist = calibrateChess(images, gridCorners, gridScale, **kwargs)
+        if ret < self.error:
+            self.error = ret
+            self.matrix = matrix
+            self.distortion = dist
+            self.mapX = None
+            self.mapY = None
+        return ret
+    def undistort(self, images, alpha=0.):
+        toReturn = []
+        frame = cv2.undistort(frame,matrix,dist)
+        size = images[0].shape
+        newMtx,roi = cv2.getOptimalNewCameraMatrix(self.matrix,self.distortion,(size[1],size[0]),alpha)
+        map1, map2 = cv2.initUndistortRectifyMap(self.matrix,self.distortion,np.eye(3),newMtx,(size[1],size[0]),cv2.CV_16SC2)
+        for img in images:
+            toReturn.append(cv2.remap(img,map1,map2,cv2.INTER_LINEAR))
+        return toReturn
 
 def toGray(image):
     iy, ix, channels = image.shape if len(image.shape)>2 else [image.shape[0], image.shape[1], 1]
@@ -303,7 +402,7 @@ def toGray(image):
         gray = image
     return gray
 
-def calibrate(images, gridCorners, gridScale, **kwargs):
+def calibrateChess(images, gridCorners, gridScale, **kwargs):
     ''' get the calibration of a camera from the images of a chessboard with number of gridCorners given'''
     cameraMatrix = kwargs.get('matrix',np.eye(3))
     distCoeffs = kwargs.get('distortion',np.zeros([14]))
